@@ -25,11 +25,9 @@ export class Rook implements ChessPiece {
   get_possible_actions(
     position: Position,
     color: PieceColor,
-    board: Board,
-    isMovedBefore: boolean,
-    includeCastling: boolean = true
+    board: Board
   ): Position[] {
-    const actions = [];
+    const actions: Position[] = [];
     for (let i = position.x + 1; i < 8; i++) {
       const targetPosition = { x: i, y: position.y };
       const q = board.query_board(targetPosition);
@@ -62,7 +60,8 @@ export class King implements ChessPiece {
     position: Position,
     color: PieceColor,
     board: Board,
-    isMovedBefore: boolean
+    isMovedBefore: boolean,
+    useCheck: boolean = true
   ): Position[] {
     const actions = [
       {
@@ -99,22 +98,87 @@ export class King implements ChessPiece {
       },
     ].filter((p) => {
       if (p.x === -1 || p.x === 8 || p.y === -1 || p.y === 8) return false;
-      else if (this.is_checked(p, color, board)) return false;
+      else if (useCheck && this.is_checked(p, color, board)) return false;
       else if (board.query_board(p) !== null) return false;
       return true;
     });
+    // Castling
+    if (!isMovedBefore && useCheck) {
+      const rooks = board.pieces.filter(
+        ({ piece, isMovedBefore: pieceIsMovedBefore, color: pieceColor }) =>
+          piece instanceof Rook && !pieceIsMovedBefore && color === pieceColor
+      );
+      rooks.forEach(({ position: rookPosition }) => {
+        if (rookPosition.x === 7) {
+          const p1 = board.query_board({ x: 6, y: position.y });
+          const p1Check = this.is_checked(
+            { x: 6, y: position.y },
+            color,
+            board
+          );
+          const p2 = board.query_board({ x: 5, y: position.y });
+          const p2Check = this.is_checked(
+            { x: 5, y: position.y },
+            color,
+            board
+          );
+          if (p1 === null && p2 === null && !p1Check && !p2Check) {
+            actions.push({ x: 6, y: position.y });
+          }
+        } else if (rookPosition.x === 0) {
+          const p1 = board.query_board({ x: 1, y: position.y });
+          const p1Check = this.is_checked(
+            { x: 1, y: position.y },
+            color,
+            board
+          );
+          const p2 = board.query_board({ x: 2, y: position.y });
+          const p2Check = this.is_checked(
+            { x: 2, y: position.y },
+            color,
+            board
+          );
+          const p3 = board.query_board({ x: 3, y: position.y });
+          const p3Check = this.is_checked(
+            { x: 3, y: position.y },
+            color,
+            board
+          );
+          if (
+            p1 === null &&
+            p2 === null &&
+            p3 === null &&
+            !p1Check &&
+            !p2Check &&
+            !p3Check
+          ) {
+            actions.push({ x: 2, y: position.y });
+          }
+        }
+      });
+    }
     return actions;
   }
   is_checked(position: Position, color: PieceColor, board: Board): boolean {
     const actions = board.pieces
-      .filter(({ piece, color: c }) => c !== color && !(piece instanceof King))
-      .reduce(
-        (actions, { piece, color, position, isMovedBefore }) =>
-          actions.concat(
+      .filter(({ color: c }) => c !== color)
+      .reduce((actions, { piece, color, position, isMovedBefore }) => {
+        if (piece instanceof King) {
+          return actions.concat(
+            piece.get_possible_actions(
+              position,
+              color,
+              board,
+              isMovedBefore,
+              false
+            )
+          );
+        } else {
+          return actions.concat(
             piece.get_possible_actions(position, color, board, isMovedBefore)
-          ),
-        [] as Position[]
-      );
+          );
+        }
+      }, [] as Position[]);
     return actions.find((pos) => is_same_position(pos, position)) !== undefined;
   }
 }
@@ -123,22 +187,10 @@ export class Queen implements ChessPiece {
     position: Position,
     color: PieceColor,
     board: Board,
-    isMovedBefore: boolean
   ): Position[] {
     return [
-      ...new Rook().get_possible_actions(
-        position,
-        color,
-        board,
-        isMovedBefore,
-        false
-      ),
-      ...new Bishop().get_possible_actions(
-        position,
-        color,
-        board,
-        isMovedBefore
-      ),
+      ...new Rook().get_possible_actions(position, color, board),
+      ...new Bishop().get_possible_actions(position, color, board),
     ];
   }
 }
@@ -146,8 +198,7 @@ export class Knight implements ChessPiece {
   get_possible_actions(
     position: Position,
     color: PieceColor,
-    board: Board,
-    isMovedBefore: boolean
+    board: Board
   ): Position[] {
     return [
       {
@@ -242,8 +293,7 @@ export class Bishop implements ChessPiece {
   get_possible_actions(
     position: Position,
     color: PieceColor,
-    board: Board,
-    isMovedBefore: boolean
+    board: Board
   ): Position[] {
     const actions: Position[] = [];
     for (let i = 1; i < 8 - position.x; i += 1) {
@@ -303,6 +353,7 @@ export type PieceT =
 
 export class Board {
   pieces: PieceT[];
+  lookupHash: Record<string, PieceT>;
   captured: PieceT[];
   currentTurn: PieceColor;
   constructor(
@@ -313,11 +364,20 @@ export class Board {
     this.pieces = pieces;
     this.currentTurn = turn;
     this.captured = captured;
+    this.lookupHash = this.__computeHash();
   }
-  query_board(position: Position): null | PieceT {
-    const piece = this.pieces.find((piece) =>
-      is_same_position(piece.position, position)
-    );
+  __hashPosition(pos: Position) {
+    return `${pos.x}${pos.y}`;
+  }
+  __computeHash() {
+    return this.pieces.reduce((prev, cur) => {
+      prev[this.__hashPosition(cur.position)] = cur;
+      return prev;
+    }, {} as Record<string, PieceT>);
+  }
+  query_board(position: Position | string): null | PieceT {
+    if (typeof position === "object") position = this.__hashPosition(position);
+    const piece = this.lookupHash[position];
     if (piece) return piece;
     else return null;
   }
@@ -340,33 +400,71 @@ export class Board {
     return null;
   }
   move_piece(from: Position, to: Position): Board | null {
-    const pieceId = this.pieces.findIndex(({ position }) =>
-      is_same_position(position, from)
-    );
-    const toPieceId = this.pieces.findIndex(({ position }) =>
-      is_same_position(position, to)
-    );
-    if (pieceId === -1) return null;
-    const pieces = this.pieces.filter(
-      (_, id) => id !== pieceId && id !== toPieceId
-    );
-    const { color, piece } = this.pieces[pieceId];
+    const fromHash = this.__hashPosition(from);
+    const toHash = this.__hashPosition(to);
+    const fromPiece = this.query_board(fromHash);
+    const toPiece = this.query_board(toHash);
+    if (fromPiece === null) return null;
+    const movedPiece = { ...fromPiece, position: to, isMovedBefore: true };
+    /*
+      Detect Castling
+    */
+    if (fromPiece.piece instanceof King && Math.abs(to.x - from.x) != 1) {
+      /* Castling */
+      const rookPos =
+        to.x > from.x
+          ? { x: 7, y: fromPiece.position.y }
+          : {
+              x: 0,
+              y: fromPiece.position.y,
+            };
+      const rookHash = this.__hashPosition(rookPos);
+      const rookPiece = this.query_board(rookHash) as Piece<Rook>;
+      const movedRook = {
+        ...rookPiece,
+        position:
+          to.x > from.x
+            ? { x: from.x + 1, y: from.y }
+            : { x: from.x - 1, y: from.y },
+        isMovedBefore: true,
+      };
+      return new Board(
+        Object.entries(this.lookupHash).reduce((prev, [h, p]) => {
+          if (h === fromHash) {
+            prev.push(movedPiece);
+            return prev;
+          } else if (h === rookHash) {
+            prev.push(movedRook);
+            return prev;
+          } else if (h === toHash) {
+            return prev;
+          } else {
+            prev.push(p);
+            return prev;
+          }
+        }, [] as PieceT[]),
+        this.currentTurn === PieceColor.WHITE
+          ? PieceColor.BLACK
+          : PieceColor.WHITE,
+        toPiece === null ? this.captured : [...this.captured, toPiece]
+      );
+    }
     return new Board(
-      [
-        ...pieces,
-        {
-          piece,
-          color,
-          position: to,
-          isMovedBefore: true,
-        },
-      ],
+      Object.entries(this.lookupHash).reduce((prev, [h, p]) => {
+        if (h === fromHash) {
+          prev.push(movedPiece);
+          return prev;
+        } else if (h === toHash) {
+          return prev;
+        } else {
+          prev.push(p);
+          return prev;
+        }
+      }, [] as PieceT[]),
       this.currentTurn === PieceColor.WHITE
         ? PieceColor.BLACK
         : PieceColor.WHITE,
-      toPieceId === -1
-        ? this.captured.slice()
-        : [...this.captured.slice(), this.pieces[toPieceId]]
+      toPiece === null ? this.captured : [...this.captured, toPiece]
     );
   }
   clone() {
